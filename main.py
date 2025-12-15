@@ -1,6 +1,7 @@
 import time
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.uix.button import Button
 from kivy.uix.camera import Camera
 from kivy.uix.floatlayout import FloatLayout
 from kivy.graphics import PushMatrix, PopMatrix, Rotate
@@ -8,8 +9,10 @@ from kivy.graphics import Color, Rectangle, StencilPush, StencilUse, StencilUnUs
 from kivy.core.window import Window
 from kivy.properties import ObjectProperty
 
-RADIUS = 150
+RADIUS = 100
 DELETION_LAG_SEC = 10
+DISAPPEAR_MODE = "Disappear Mode"
+PHOTO_MODE = "Photo Mode"
 
 class RotatedCamera(Camera):
     def __init__(self, **kwargs):
@@ -17,7 +20,6 @@ class RotatedCamera(Camera):
 
         with self.canvas.before:
             PushMatrix()
-            # Rotate by -90 degrees around the center of the widget
             self.rotate_instruction = Rotate(origin=self.center)
 
         with self.canvas.after:
@@ -33,6 +35,7 @@ class RotatedCamera(Camera):
         self.rotate_instruction.origin = self.center
 
 class CameraMaskApp(App):
+    mode = DISAPPEAR_MODE
     def build(self):
         # The root widget will be a FloatLayout
         root = FloatLayout()
@@ -44,36 +47,63 @@ class CameraMaskApp(App):
         root.add_widget(self.camera)
 
         # Create a MaskingWidget to sit on top of the camera
-        self.mask_widget = MaskingWidget()
+        self.mask_widget = MaskingWidget(app = self)
         root.add_widget(self.mask_widget)
 
         # Bind the mouse position for revealing the camera view
         Window.bind(mouse_pos=self.mask_widget.on_mouse_pos)
 
-        Clock.schedule_interval(self.mask_widget.update_canvas, 1.0 / 60.0)
+        Clock.schedule_interval(self.mask_widget.update_canvas, 1.0 / 300.0)
+
+        button = Button(
+            text=self.mode,
+            size_hint=(None, None), # Disable automatic sizing
+            size=(300, 100),         # Set a fixed size (width, height)
+            pos_hint={'right': 1, 'top': 1} # Position at the top right
+        )
+        button.bind(on_press=self.toggle_mode)
+        root.add_widget(button)
 
         return root
 
-class MaskingWidget(FloatLayout):
-    mouse_x = ObjectProperty(0)
-    mouse_y = ObjectProperty(0)
+    def get_mode(self):
+        return self.mode
 
-    def __init__(self, **kwargs):
+    def toggle_mode(self, instance):
+        if self.mode == DISAPPEAR_MODE:
+            self.mode = PHOTO_MODE
+        else:
+            self.mode = DISAPPEAR_MODE
+        instance.text = self.mode
+
+        self.mask_widget.clear_canvas()
+
+
+class MaskingWidget(FloatLayout):
+    def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
+        self.clear_canvas()
+        self.app = app
+
+        self.bind(pos=self.update_canvas, size=self.update_canvas)
+        self.update_canvas()
+
+    def get_mode(self):
+        return self.app.get_mode()
+
+    def on_mouse_pos(self, window, pos):
+        # Update the mouse position relative to the widget
+        self.mouse_x = pos[0] - self.pos[0] - RADIUS/2
+        self.mouse_y = pos[1] - self.pos[1] - RADIUS/2
+
+    def clear_canvas(self):
+        self.mouse_x = 0
+        self.mouse_y = 0
+
         self.previous_touch_timestamps = []
         self.previous_mouse_x = []
         self.previous_mouse_y = []
         self.is_currently_touched = False
-
-        self.bind(pos=self.update_canvas, size=self.update_canvas)
-        self.bind(mouse_x=self.update_canvas, mouse_y=self.update_canvas)
-        self.update_canvas()
-
-    #def on_touch_move(self, win, touch):
-    def on_mouse_pos(self, window, pos):
-        # Update the mouse position relative to the widget
-        self.mouse_x = pos[0] - self.pos[0]
-        self.mouse_y = pos[1] - self.pos[1]
 
     def update_canvas(self, *args):
         self.canvas.clear()
@@ -88,30 +118,21 @@ class MaskingWidget(FloatLayout):
 
             # Draw the transparent "hole" for the camera view
             Color(0, 0, 0, 0)  # Transparent color
-            Ellipse(pos=(self.mouse_x, self.mouse_y),
-                    size=(RADIUS, RADIUS)) # Adjust hole size
-            current_time = time.time()
-            first_viable_index = None
-            if len(self.previous_mouse_x):
-                for i in range(0, len(self.previous_mouse_x)):
-                    if current_time - self.previous_touch_timestamps[i] > DELETION_LAG_SEC:
-                        continue
-                    if not first_viable_index:
-                        first_viable_index = i
-                    Ellipse(pos=(self.previous_mouse_x[i], self.previous_mouse_y[i]),
-                            size=(RADIUS, RADIUS)) # Adjust hole size
-
             if self.mouse_x and self.mouse_y:
-                self.previous_touch_timestamps.append(current_time)
-                self.previous_mouse_x.append(self.mouse_x)
-                self.previous_mouse_y.append(self.mouse_y)
-
-            #print(first_viable_index)
-            # Clip off old touches
-            #if first_viable_index:
-            #    del self.previous_touch_timestamps[:first_viable_index]
-            #    del self.previous_mouse_x[:first_viable_index]
-            #    del self.previous_mouse_y[:first_viable_index]
+                current_time = time.time()
+                first_viable_index = None
+                if len(self.previous_mouse_x) and len(self.previous_mouse_y):
+                    for i in range(0, len(self.previous_mouse_x)):
+                        if self.get_mode() == DISAPPEAR_MODE and current_time - self.previous_touch_timestamps[i] > DELETION_LAG_SEC:
+                            continue
+                        if not first_viable_index:
+                            first_viable_index = i
+                        Ellipse(pos=(self.previous_mouse_x[i], self.previous_mouse_y[i]),
+                                size=(RADIUS, RADIUS)) # Adjust hole size
+                if not len(self.previous_mouse_x) or self.mouse_x != self.previous_mouse_x[-1] or self.mouse_y != self.previous_mouse_y[-1]:
+                    self.previous_touch_timestamps.append(current_time)
+                    self.previous_mouse_x.append(self.mouse_x)
+                    self.previous_mouse_y.append(self.mouse_y)
 
             # --- PHASE 2: Apply the stencil to the background ---
             # StencilUse uses the mask created in Phase 1
